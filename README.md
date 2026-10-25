@@ -25,10 +25,10 @@
 
 支持 **Windows 10 / 11 64 位**，发布版不需要安装 Python。
 
-在 GitHub 仓库的 **Releases** 页面下载：
+在 [GitHub Releases](https://github.com/ddafina233/huaci-translator/releases/latest) 页面下载：
 
-- `划词翻译-安装包.exe`：推荐。按用户安装到 `%LOCALAPPDATA%\Programs\划词翻译`，不需要管理员权限，带开始菜单快捷方式和卸载程序。
-- `划词翻译-便携版.exe`：单文件免安装。配置和生词本会保存在 exe 所在目录，请放在有写入权限的文件夹。
+- `hcfy-setup-1.2.0.exe`：推荐，安装版。按用户安装到 `%LOCALAPPDATA%\Programs\划词翻译`，不需要管理员权限，带开始菜单快捷方式和卸载程序。
+- `hcfy-portable-1.2.0.exe`：免安装单文件。配置和生词本会保存在 exe 所在目录，请放在有写入权限的文件夹。
 
 更完整的安装、数据备份和卸载说明见 [docs/安装说明.md](docs/安装说明.md)。
 
@@ -37,7 +37,7 @@
 要求：Python 3.10+，Windows 10/11。
 
 ```powershell
-git clone <你的仓库地址>
+git clone https://github.com/ddafina233/huaci-translator.git
 cd 划词翻译
 python 划词翻译.pyw
 ```
@@ -123,3 +123,4 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1
 ## 许可证
 
 代码以 [MIT License](LICENSE) 发布。第三方翻译服务、商标和接口的使用受各自条款约束。
+
