@@ -19,6 +19,7 @@ env/
 打包/
 dist/
 build/
+build_*/
 portable/
 installer/
 *.spec
@@ -32,3 +33,4 @@ installer/
 .DS_Store
 Thumbs.db
 desktop.ini
+
