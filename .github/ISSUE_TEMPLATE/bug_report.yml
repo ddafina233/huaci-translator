@@ -1,0 +1,60 @@
+name: Bug report
+description: 报告一个可以复现的问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请不要粘贴生词本、翻译缓存、完整日志或任何个人信息。
+  - type: input
+    id: version
+    attributes:
+      label: 程序版本
+      description: 设置窗口底部，或运行日志第一行
+      placeholder: "v1.2.0"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows 版本
+      placeholder: "Windows 11 24H2 x64"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 在 Chrome 中选中...
+        2. 鼠标移入弹窗...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期表现
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际表现
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志（可选）
+      description: 请先删除个人信息、生词和翻译内容
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 确认
+      options:
+        - label: 我已尝试重启程序，并确认不是网络问题
+        - label: 我确认没有在 Issue 中粘贴个人生词、缓存或账号信息
+          required: true

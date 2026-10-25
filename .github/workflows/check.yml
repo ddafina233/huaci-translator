@@ -1,0 +1,33 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  syntax:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Compile Python files
+        shell: pwsh
+        run: |
+          python -m py_compile 划词翻译.pyw winutil.py trans_core.py vocab_store.py
+
+      - name: Ensure private runtime data is not tracked
+        shell: pwsh
+        run: |
+          $forbidden = @("设置.json", "生词本.json", "翻译缓存.json", "运行日志.log")
+          $tracked = git ls-files
+          foreach ($name in $forbidden) {
+            if ($tracked -contains $name) {
+              throw "禁止提交个人数据文件：$name"
+            }
+          }

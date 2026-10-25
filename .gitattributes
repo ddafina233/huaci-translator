@@ -1,0 +1,19 @@
+* text=auto
+
+# Python / Markdown / YAML 使用 LF
+*.py   text eol=lf
+*.pyw  text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.iss  text eol=crlf
+*.ps1  text eol=crlf
+
+# Windows 启动脚本：bat 用 CRLF，vbs 是 UTF-16 保持二进制
+*.bat  text eol=crlf
+*.vbs  binary
+
+# 二进制素材
+*.ico  binary
+*.png  binary
+*.exe  binary
