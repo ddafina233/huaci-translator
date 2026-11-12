@@ -1,5 +1,5 @@
-﻿#define MyAppName "划词翻译"
-#define MyAppVersion "1.2.0"
+#define MyAppName "划词翻译"
+#define MyAppVersion "1.3.0"
 #define MyAppExeName "划词翻译.exe"
 #define MyAppPublisher "划词翻译 contributors"
 
@@ -8,7 +8,7 @@ AppId={{267425ED-422F-451C-B20E-B95BFFD84FEE}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-VersionInfoVersion=1.2.0.0
+VersionInfoVersion=1.3.0.0
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription=划词翻译安装程序
 DefaultDirName={localappdata}\Programs\划词翻译

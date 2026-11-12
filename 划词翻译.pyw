@@ -39,7 +39,7 @@ FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 APP_DIR = (Path(sys.executable).resolve().parent if FROZEN
            else Path(__file__).resolve().parent)
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 APP_TITLE = "划词翻译"
 
 # 让任务栏图标独立分组
@@ -404,6 +404,8 @@ class TranslationPopup:
         self.request_id = 0
         self.loading = False
         self.expanded = False
+        self.stage = 0               # 0=图标 1=简明 2=详情
+        self._stage_target = 0
         self.mode = "idle"          # idle / loading / result / error
         self.error_message = ""
         self._footer_visible = True
@@ -415,6 +417,15 @@ class TranslationPopup:
         self._anim_job: Optional[str] = None
         self._animating = False
         self._anim_token = 0
+        self._icon_w = app.px(48)
+        self._icon_h = app.px(48)
+        self._compact_h = app.px(150)
+        self._panel_w = 0
+        self._panel_h = 0
+        self._region_x = 0
+        self._region_y = 0
+        self._region_w = self._icon_w
+        self._region_h = self._icon_h
         self._last_geom: Optional[tuple[int, int, int, int]] = None
         self._drag_origin: Optional[tuple[int, int, int, int]] = None
         self._phrase_map: dict[str, str] = {}
@@ -444,7 +455,7 @@ class TranslationPopup:
             highlightthickness=0, bd=0,
         )
         self.logo.pack(side="left", padx=(0, px(9)))
-        round_rect(self.logo, px(1), px(1), px(26), px(26), px(7),
+        round_rect(self.logo, px(1), px(1), px(26), px(26), px(9),
                    fill=ACCENT, outline="")
         self.logo.create_text(
             px(13.5), px(13.5), text="译", fill="#FFFFFF",
@@ -632,13 +643,18 @@ class TranslationPopup:
     def prepare_show(self) -> None:
         """新内容出现时先保持紧凑模式。"""
         self._cancel_animation()
+        self.stage = 0
         self.expanded = False
+        self._stage_target = 0
         self._cancel_expand()
         self._hover_armed = False
         self._last_inside = None
         self._shown_at = time.time()
         self._outside_since = 0.0
         self._hide_footer()
+        # 新一次划词立刻收回图标，避免旧面板在新内容出现前闪一下。
+        if self.visible and self.hwnd:
+            self._set_region()
 
     def _compact_translation(self, translation: str) -> str:
         t = re.sub(r"\s+", " ", str(translation or "")).strip()
@@ -699,6 +715,7 @@ class TranslationPopup:
         self.result = None
         self.mode = "error"
         self.error_message = str(message or "")
+        self.stage = 0
         self.expanded = False
         self._hide_footer()
         if self._last_inside:
@@ -706,57 +723,161 @@ class TranslationPopup:
         self._paint_current(reposition=False)
 
     def set_expanded(self, expanded: bool) -> None:
-        if self.mode not in ("result", "error"):
+        """兼容旧调用：True=完整详情，False=简明区。"""
+        self.set_stage(2 if expanded else 1)
+
+    def set_stage(self, stage: int) -> None:
+        """0=图标，1=简明，2=完整详情。"""
+        if self.mode == "idle":
             return
-        if self.expanded == expanded:
+        stage = max(0, min(2, int(stage)))
+        if self.stage == stage:
             return
+        self._cancel_animation()
+        self.stage = stage
+        self.expanded = stage == 2
+        try:
+            self.win.attributes("-alpha", GLASS_ALPHA)
+        except Exception:
+            pass
+        if stage == 2:
+            target_x, target_y = 0, 0
+            target_w = self._panel_w or self.app.px(440)
+            target_h = self._panel_h or self._compact_h
+        elif stage == 1:
+            target_x, target_y, target_w, target_h = self._compact_rect()
+        else:
+            target_x, target_y, target_w, target_h = self._icon_rect()
+        if not self.visible or not self.hwnd:
+            self._region_x, self._region_y = target_x, target_y
+            self._region_w, self._region_h = target_w, target_h
+            self._set_region()
+            return
+        self._animate_region(target_x, target_y, target_w, target_h)
+
+    def _icon_rect(self) -> tuple[int, int, int, int]:
+        """图标态的可见矩形：只取「译」这个方块本身，不带白边/窗口边框。"""
+        try:
+            x = self.logo.winfo_rootx() - self.win.winfo_rootx()
+            y = self.logo.winfo_rooty() - self.win.winfo_rooty()
+            w = self.logo.winfo_width()
+            h = self.logo.winfo_height()
+            inset = max(1, self.app.px(1))
+            w = max(1, w - 2 * inset)
+            h = max(1, h - 2 * inset)
+            return int(x) + inset, int(y) + inset, w, h
+        except Exception:
+            return (self.app.px(15), self.app.px(11),
+                    self.app.px(25), self.app.px(25))
+
+    def _compact_rect(self) -> tuple[int, int, int, int]:
+        """收起态只露出面板顶部：头部 + 原文 + 简明释义。
+
+        高度按加粗释义最后一行自适应；句子/长释义换行时不会把下一行裁掉。
+        """
+        w = self._panel_w or self.app.px(440)
+        panel_h = self._panel_h or self._compact_h
+        h = self._compact_h
+        try:
+            ranges = self.text.tag_ranges("trans")
+            if ranges:
+                last = self.text.dlineinfo(f"{ranges[1]}-1c")
+                if last:
+                    text_top = self.text.winfo_rooty() - self.win.winfo_rooty()
+                    bottom = text_top + int(last[1]) + int(last[3]) + self.app.px(10)
+                    h = max(h, bottom)
+        except Exception:
+            pass
+        h = min(h, panel_h)
+        return 0, 0, w, max(1, int(h))
+
+    def _highlight_rect(self) -> Optional[tuple[int, int, int, int]]:
+        """加粗释义（tag=trans）的屏幕矩形；三阶段悬停的第二步。"""
+        try:
+            ranges = self.text.tag_ranges("trans")
+            if not ranges:
+                return None
+            start, end = ranges[0], ranges[1]
+            info = self.text.dlineinfo(start)
+            if not info:
+                return None
+            tx, ty, tw, th = int(info[0]), int(info[1]), int(info[2]), int(info[3])
+            # 释义可能换成两行：把最后一行也并进来，形成一个竖向热区。
+            try:
+                last = self.text.dlineinfo(f"{end}-1c")
+                if last:
+                    bottom = max(ty + th, int(last[1]) + int(last[3]))
+                    th = max(1, bottom - ty)
+            except Exception:
+                pass
+            pad = self.app.px(5)
+            x = self.text.winfo_rootx() + tx - pad
+            y = self.text.winfo_rooty() + ty - pad
+            return x, y, max(1, tw) + 2 * pad, max(1, th) + 2 * pad
+        except Exception:
+            return None
+
+    def _animate_region(self, target_x: int, target_y: int,
+                        target_w: int, target_h: int) -> None:
+        """只改变窗口可见区域，不改 Tk 窗口尺寸，避免重新排版闪烁。"""
         self._cancel_animation()
         token = self._anim_token
         self._animating = True
-        self.expanded = bool(expanded)
-        # 保持窗口可见，只做轻微透明度过渡，避免中间出现空白/消失。
-        self.win.attributes("-alpha", 0.88)
-        self._paint_current(reposition=False, present=False)
-        try:
-            self.win.update()
-        except Exception:
-            pass
-        self._present(reposition=False)
-        try:
-            self.win.update()
-        except Exception:
-            pass
+        start_x = max(0, self._region_x)
+        start_y = max(0, self._region_y)
+        start_w = max(1, self._region_w)
+        start_h = max(1, self._region_h)
+        steps = 12
 
-        def done() -> None:
-            if token != self._anim_token:
+        def step(i: int) -> None:
+            if token != self._anim_token or not self.visible:
                 return
-            self._animating = False
-            self.win.attributes("-alpha", GLASS_ALPHA)
-            self._set_region()
+            p = i / steps
+            ease = 1.0 - (1.0 - p) ** 3
+            x = int(round(start_x + (target_x - start_x) * ease))
+            y = int(round(start_y + (target_y - start_y) * ease))
+            w = int(round(start_w + (target_w - start_w) * ease))
+            h = int(round(start_h + (target_h - start_h) * ease))
+            self._region_x = max(0, x)
+            self._region_y = max(0, y)
+            self._region_w = max(1, w)
+            self._region_h = max(1, h)
+            if self.hwnd:
+                # 全程保持同一个圆角半径。之前逐帧把 7px 过渡到 15px，
+                # 圆角在动画中不断重算，视觉上就会出现“R 角抽搐”。
+                winutil.set_round_region(
+                    self.hwnd, self.app.px(9),
+                    self._region_w, self._region_h,
+                    self._region_x, self._region_y,
+                )
+            if i < steps:
+                self._anim_job = self.win.after(15, lambda: step(i + 1))
+            else:
+                self._anim_job = None
+                self._animating = False
+                self._set_region()
 
-        # 给新内容极短时间完成重排，然后淡入到正常透明度。
-        self._anim_job = self.win.after(
-            10, lambda: self._fade_to(GLASS_ALPHA, 100, done)
-        )
+        step(1)
 
     # ------------------------------------------------------------------
     def _paint_current(self, reposition: bool = False,
                        present: bool = True) -> None:
-        expanded = bool(self.expanded and self.mode in ("result", "error"))
-        if expanded:
+        # 内容始终按完整面板排版；图标态只是用窗口区域裁剪，
+        # 展开时不需要重新排版，才能得到真正平滑的“从图标后伸出”动画。
+        if self.mode in ("result", "error"):
             self._show_footer()
         else:
             self._hide_footer()
         self.dir_label.configure(text=self._direction_text(self.current_src))
 
         if self.mode == "loading":
-            self._build_loading(expanded=False)
+            self._build_loading(True)
             self.status.configure(text="正在翻译")
             self.add_btn.set_enabled(False)
             self.copy_btn.set_enabled(False)
             self.copy_btn.set_style(fg=FAINT)
         elif self.mode == "error":
-            self._build_error(expanded)
+            self._build_error(True)
             self.status.configure(text="连接失败")
             self.copy_btn.set_enabled(False)
             self.copy_btn.set_style(fg=FAINT)
@@ -766,7 +887,7 @@ class TranslationPopup:
             self.add_btn._command = self.app.retry_current  # type: ignore[attr-defined]
             self.add_btn.set_enabled(True)
         elif self.mode == "result" and self.result is not None:
-            self._build_result(expanded)
+            self._build_result(True)
             if self.result.from_cache:
                 status = "缓存 · 即时"
             else:
@@ -797,22 +918,6 @@ class TranslationPopup:
         result = self.result
         if result is None:
             return
-        if not expanded:
-            def build_compact() -> None:
-                self.text.insert("end",
-                                 truncate_text(self._source_text(), 44), "source")
-                self.text.insert("end", "\n")
-                self.text.insert("end", self._compact_translation(result.translation),
-                                 "compact_trans")
-                self.text.insert("end", "\n")
-                if result.senses or result.phrases or result.examples:
-                    hint = "悬停展开 · 词性 / 短语 / 例句"
-                else:
-                    hint = "悬停展开 · 更多操作"
-                self.text.insert("end", hint, "hint")
-            self._set_text(build_compact)
-            return
-
         def build() -> None:
             px = self.app.px
             self.text.insert("end", self._source_text(), "source")
@@ -902,16 +1007,6 @@ class TranslationPopup:
         self._set_text(build)
 
     def _build_error(self, expanded: bool) -> None:
-        if not expanded:
-            def build_compact() -> None:
-                self.text.insert("end",
-                                 truncate_text(self._source_text(), 44), "source")
-                self.text.insert("end", "\n\n")
-                self.text.insert("end", "翻译失败\n", "error_title")
-                self.text.insert("end", "悬停展开 · 重试 / 网页搜索", "hint")
-            self._set_text(build_compact)
-            return
-
         def build() -> None:
             self.text.insert("end", self._source_text(), "source")
             self.text.insert("end", "\n\n")
@@ -945,53 +1040,68 @@ class TranslationPopup:
                 pass
             self._expand_job = None
 
-    def _expand_now(self) -> None:
+    def _advance_stage(self, stage: int) -> None:
         self._expand_job = None
-        logging.getLogger(__name__).debug(
-            "悬停展开 visible=%s expanded=%s mode=%s",
-            self.visible, self.expanded, self.mode,
+        if not self.visible or self.mode == "idle":
+            return
+        if stage != self._stage_target:
+            return
+        self.set_stage(stage)
+
+    def _schedule_stage(self, stage: int, delay_ms: int) -> None:
+        if self._expand_job is not None:
+            if self._stage_target == stage:
+                return
+            self._cancel_expand()
+        self._stage_target = stage
+        self._expand_job = self.win.after(
+            delay_ms, lambda: self._advance_stage(stage)
         )
-        if (self.visible and not self.expanded
-                and self.mode in ("result", "error")):
-            self.set_expanded(True)
 
     def _watch_hover(self) -> None:
-        """轮询鼠标是否在弹窗上：进入展开，移开自动收起。"""
+        """三阶段悬停：图标 → 简明 → 详情，移开逐级收回。"""
         try:
-            if self.visible and self.hwnd:
+            if self.visible and self.hwnd and self.mode != "idle":
                 x, y = winutil.get_cursor_pos()
                 left, top, right, bottom = winutil.get_window_rect(self.hwnd)
-                inside = left <= x < right and top <= y < bottom
-                if inside != self._last_inside:
-                    self._last_inside = inside
-                    logging.getLogger(__name__).debug(
-                        "悬停检测 pos=%s,%s rect=%s,%s,%s,%s inside=%s",
-                        x, y, left, top, right, bottom, inside,
-                    )
+                ix, iy, iw, ih = self._icon_rect()
+                cx, cy, cw, ch = self._compact_rect()
+                inside_icon = (left + ix <= x < left + ix + iw
+                               and top + iy <= y < top + iy + ih)
+                inside_compact = (left + cx <= x < left + cx + cw
+                                  and top + cy <= y < top + cy + ch)
+                inside_full = (left <= x < right and top <= y < bottom)
+                highlight_rect = self._highlight_rect() if self.stage == 1 else None
+                inside_highlight = (
+                    highlight_rect is not None
+                    and highlight_rect[0] <= x < highlight_rect[0] + highlight_rect[2]
+                    and highlight_rect[1] <= y < highlight_rect[1] + highlight_rect[3]
+                )
                 now = time.time()
-                if inside:
-                    self._outside_since = 0.0
-                    if (not self._animating
-                            and not self.expanded
-                            and self.mode in ("result", "error")
-                            and self._hover_armed
-                            and now - self._shown_at >= 0.3
-                            and self._expand_job is None):
-                        self._expand_job = self.win.after(110, self._expand_now)
-                else:
-                    self._hover_armed = True
-                    self._outside_since = self._outside_since or now
+                target = None
+                delay = 0
+                if self.stage == 0:
+                    if inside_icon and now - self._shown_at >= 0.22:
+                        target, delay = 1, 110
+                elif self.stage == 1:
+                    if inside_highlight:
+                        target, delay = 2, 220
+                    elif not inside_compact:
+                        target, delay = 0, 360
+                elif self.stage == 2:
+                    if not inside_full:
+                        target, delay = 1, 420
+                if target is None:
                     self._cancel_expand()
-                    if (not self._animating and self.expanded
-                            and now - self._outside_since >= 0.42):
-                        self._outside_since = 0.0
-                        self.set_expanded(False)
+                else:
+                    self._schedule_stage(target, delay)
+                self._last_inside = inside_full
             else:
                 self._cancel_expand()
         except Exception:
             pass
         try:
-            self.win.after(100, self._watch_hover)
+            self.win.after(90, self._watch_hover)
         except Exception:
             pass
 
@@ -1007,45 +1117,104 @@ class TranslationPopup:
         self._animating = False
 
     def _set_region(self) -> None:
+        if not self.hwnd:
+            return
+        try:
+            if self.stage >= 2 and self._panel_w and self._panel_h:
+                x, y = 0, 0
+                w, h = self._panel_w, self._panel_h
+            elif self.stage == 1:
+                x, y, w, h = self._compact_rect()
+            else:
+                x, y, w, h = self._icon_rect()
+            left, top, right, bottom = winutil.get_window_rect(self.hwnd)
+            full_w = max(1, right - left)
+            full_h = max(1, bottom - top)
+            x = max(0, min(int(x), full_w - 1))
+            y = max(0, min(int(y), full_h - 1))
+            w = max(1, min(full_w - x, int(w)))
+            h = max(1, min(full_h - y, int(h)))
+            self._region_x, self._region_y = x, y
+            self._region_w, self._region_h = w, h
+            # 全程使用同一个半径：区域动画时逐帧改圆角会让 R 角抖动。
+            radius = self.app.px(9)
+            winutil.set_round_region(
+                self.hwnd, radius, w, h, x, y
+            )
+        except Exception:
+            pass
+
+    def _apply_icon_region(self) -> None:
+        """把窗口区域裁到「译」图标本体；用于首次 show 前。"""
+        if not self.hwnd:
+            return
+        x, y, w, h = self._icon_rect()
+        left, top, right, bottom = winutil.get_window_rect(self.hwnd)
+        full_w = max(1, right - left)
+        full_h = max(1, bottom - top)
+        x = max(0, min(int(x), full_w - 1))
+        y = max(0, min(int(y), full_h - 1))
+        w = max(1, min(full_w - x, int(w)))
+        h = max(1, min(full_h - y, int(h)))
+        self._region_x, self._region_y = x, y
+        self._region_w, self._region_h = w, h
+        winutil.set_round_region(self.hwnd, self.app.px(9), w, h, x, y)
+
+    def _apply_compact_region(self, w: int = 0, h: int = 0) -> None:
+        """把窗口区域裁到顶部简明区。"""
+        if not self.hwnd:
+            return
+        cw = max(1, int(w or self._panel_w or self.app.px(440)))
+        ch = max(1, min(int(h or self._compact_h),
+                        int(self._panel_h or self._compact_h)))
+        self._region_x, self._region_y = 0, 0
+        self._region_w, self._region_h = cw, ch
+        winutil.set_round_region(self.hwnd, self.app.px(9), cw, ch, 0, 0)
+
+    def _reshow_icon_only(self, w: int = 0) -> None:
+        """尺寸定稿后再隐藏/显示一次，让窗口阴影只覆盖图标。"""
+        self.win.withdraw()
+        self.win.update_idletasks()
+        self._apply_icon_region()
         if self.hwnd:
-            try:
-                winutil.set_round_region(self.hwnd, self.app.px(15))
-            except Exception:
-                pass
+            winutil.apply_rounded_corners(self.hwnd)
+        self.win.deiconify()
+        self.win.update()
+        self._register_hwnd()
+        if self.hwnd:
+            winutil.apply_rounded_corners(self.hwnd)
 
     def _apply_geom(self, w: int, h: int, x: int, y: int) -> None:
         self.win.geometry(f"{w}x{h}+{x}+{y}")
         self.win.update_idletasks()
         self._last_geom = (w, h, x, y)
+        self._panel_w, self._panel_h = w, h
         self._set_region()
 
     def _animate_show(self, w: int, h: int, x: int, y: int) -> None:
+        """只淡入「译」图标；完整内容已经在窗口里排好。"""
         self._cancel_animation()
         token = self._anim_token
         self._animating = True
-        start_y = y + self.app.px(6)
-        self._apply_geom(w, h, x, start_y)
+        self.stage = 0
+        self.expanded = False
+        self._apply_icon_region()
         self.win.attributes("-alpha", 0.0)
-        steps = 2
+        steps = 3
 
         def step(i: int) -> None:
             if token != self._anim_token or not self.visible:
                 return
             p = i / steps
             ease = 1.0 - (1.0 - p) ** 3
-            yy = int(round(start_y + (y - start_y) * ease))
-            if self.hwnd:
-                winutil.resize_window(self.hwnd, x, yy, w, h)
-            else:
-                self.win.geometry(f"{w}x{h}+{x}+{yy}")
             self.win.attributes("-alpha", max(0.0, GLASS_ALPHA * ease))
             if i < steps:
-                self._anim_job = self.win.after(30, lambda: step(i + 1))
+                self._anim_job = self.win.after(24, lambda: step(i + 1))
             else:
                 self._anim_job = None
                 self._animating = False
-                self._apply_geom(w, h, x, y)
                 self.win.attributes("-alpha", GLASS_ALPHA)
+                self._set_region()
 
         step(1)
 
@@ -1077,28 +1246,46 @@ class TranslationPopup:
 
     # ------------------------------------------------------------------
     def _present(self, reposition: bool = False) -> None:
-        """计算高度、定位并显示；紧凑模式只占一小块屏幕。"""
+        """计算完整面板高度并定位；图标态只用窗口区域裁剪。"""
         px = self.app.px
         first_show = not self.visible
-        expanded = bool(self.expanded and self.mode in ("result", "error"))
-        if expanded:
-            width = px(int(self.app.config.get("popup_width", 440)))
-        else:
-            width = px(int(self.app.config.get("popup_collapsed_width", 390)))
+        width = px(int(self.app.config.get("popup_width", 440)))
         max_h = px(int(self.app.config.get("popup_max_height", 600)))
         left, top, right, bottom = winutil.get_work_area(*self.anchor)
         wl, wt, wr, wb = left, top, right, bottom
         max_h = min(max_h, max(px(220), bottom - top - px(24)))
         if width > right - left - px(16):
             width = right - left - px(16)
+        # 尽量让左上角图标贴着选区：优先在选区右下方展开，
+        # 空间不够时先缩窄/缩短面板，而不是把整个面板甩到左边或上边。
+        ax, ay = self.anchor
+        gap = px(14)
+        avail_w = right - (ax + gap) - px(8)
+        if avail_w >= px(340):
+            width = min(width, avail_w)
+        avail_h = bottom - (ay + gap) - px(8)
+        if avail_h >= px(220):
+            max_h = min(max_h, avail_h)
 
         if first_show:
             self.win.attributes("-alpha", 0.0)
             x, y = self._calc_pos(width, max_h)
             self.win.geometry(f"{width}x{max_h}+{x}+{y}")
+            self.win.update_idletasks()
+            # 关键：必须在 deiconify 之前就把窗口区域裁成图标。
+            # 否则 Windows 会按整窗矩形创建阴影，即使之后把区域裁小，
+            # 桌面上仍会留一圈“景深框框”。
+            hwnd = winutil.get_root_window(int(self.win.winfo_id()))
+            if hwnd:
+                self.hwnd = hwnd
+                winutil.apply_rounded_corners(hwnd)
+                self._apply_icon_region()
             self.win.deiconify()
             self.win.update()
             self._register_hwnd()
+            if self.hwnd:
+                # 重新 show 后 Windows 可能补回 1px DWM 边框，每次都关掉。
+                winutil.apply_rounded_corners(self.hwnd)
         else:
             self.win.update_idletasks()
             # 宽度变化会改变换行行数，必须先用目标宽度重排再量高度，
@@ -1119,7 +1306,7 @@ class TranslationPopup:
                     if self._footer_visible else 0)
         body_pad = px(8)
         wanted = header_h + footer_h + content_h + body_pad
-        min_h = px(120 if not expanded else 190)
+        min_h = px(120)
         win_h = max(min_h, wanted)
 
         if win_h > max_h:
@@ -1154,8 +1341,13 @@ class TranslationPopup:
             self.win.geometry(f"{width}x{win_h}+{x}+{y}")
             self.win.update()
 
+        if first_show:
+            # 最终尺寸已经确定；重新显示一次，让阴影只按图标生成。
+            self._reshow_icon_only()
+
         self.visible = True
         self._last_geom = (width, win_h, x, y)
+        self._panel_w, self._panel_h = width, win_h
         if first_show:
             self._animate_show(width, win_h, x, y)
         else:
@@ -1230,7 +1422,9 @@ class TranslationPopup:
     def hide(self) -> None:
         self.loading = False
         self.visible = False
+        self.stage = 0
         self.expanded = False
+        self._stage_target = 0
         self._hover_armed = False
         self._outside_since = 0.0
         self._cancel_expand()

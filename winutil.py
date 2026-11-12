@@ -75,6 +75,8 @@ SWP_SHOWWINDOW = 0x0040
 HWND_TOPMOST = -1
 DWM_WINDOW_CORNER_PREFERENCE = 33
 DWMWCP_ROUND = 2
+DWM_BORDER_COLOR = 34
+DWM_COLOR_NONE = 0xFFFFFFFE
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 # 这些格式不是普通 HGLOBAL，无法安全地原样备份/还原，直接跳过。
@@ -384,15 +386,30 @@ def point_in_client(hwnd: int, x: int, y: int) -> bool:
     return r.left <= pt.x < r.right and r.top <= pt.y < r.bottom
 
 
-def set_round_region(hwnd: int, radius: int) -> None:
-    """用窗口区域裁出真正的圆角（比 DWM 圆角更可靠，适用于无边框窗口）。"""
+def set_round_region(hwnd: int, radius: int,
+                     width: Optional[int] = None,
+                     height: Optional[int] = None,
+                     left: int = 0, top: int = 0) -> None:
+    """用窗口区域裁出真正的圆角；可从窗口内任意位置显示一块区域。
+
+    传入 width/height/left/top 时，只显示这块矩形；用于“图标 → 面板”
+    的平滑展开动画：Tk 内容始终保持完整，只改变可见区域。
+    """
     if not hwnd:
         return
-    left, top, right, bottom = get_window_rect(hwnd)
-    w = max(1, right - left)
-    h = max(1, bottom - top)
+    win_left, win_top, right, bottom = get_window_rect(hwnd)
+    full_w = max(1, right - win_left)
+    full_h = max(1, bottom - win_top)
+    x = max(0, min(int(left), full_w - 1))
+    y = max(0, min(int(top), full_h - 1))
+    w = full_w - x if width is None else max(1, min(full_w - x, int(width)))
+    h = full_h - y if height is None else max(1, min(full_h - y, int(height)))
     r = max(2, int(radius))
-    region = gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, r * 2, r * 2)
+    # 半径不能超过可见区域的一半，否则小图标区域会退化成方块。
+    r = min(r, max(2, min(w, h) // 2))
+    region = gdi32.CreateRoundRectRgn(
+        x, y, x + w + 1, y + h + 1, r * 2, r * 2
+    )
     if region:
         # 成功后 region 归系统所有，不要 DeleteObject。
         user32.SetWindowRgn(wt.HWND(hwnd), region, True)
@@ -408,10 +425,16 @@ def apply_rounded_corners(hwnd: int) -> None:
             wt.HWND, wt.DWORD, ctypes.c_void_p, wt.DWORD
         ]
         dwmapi.DwmSetWindowAttribute.restype = ctypes.c_long
-        pref = ctypes.c_int(DWMWCP_ROUND)
+        # 不要设置 DWMWCP_ROUND：Windows 11 会按整个窗口矩形画一圈
+        # 圆角描边/阴影，即使 SetWindowRgn 只露出小图标，也会在桌面上
+        # 留下一个“景深框框”。圆角由我们自己的 SetWindowRgn 负责。
+        # Windows 11 会给窗口加一圈 1px 的 DWM 边框；窗口被
+        # SetWindowRgn 裁成小图标后，这圈边框仍按整窗矩形绘制，
+        # 看起来就像“旧窗口边框还在”。设为 COLOR_NONE 去掉它。
+        no_border = ctypes.c_uint(DWM_COLOR_NONE)
         dwmapi.DwmSetWindowAttribute(
-            wt.HWND(hwnd), DWM_WINDOW_CORNER_PREFERENCE,
-            ctypes.byref(pref), ctypes.sizeof(pref),
+            wt.HWND(hwnd), DWM_BORDER_COLOR,
+            ctypes.byref(no_border), ctypes.sizeof(no_border),
         )
     except Exception:
         pass
@@ -421,7 +444,7 @@ def keep_topmost_noactivate(hwnd: int) -> None:
     try:
         user32.SetWindowPos(
             wt.HWND(hwnd), wt.HWND(HWND_TOPMOST), 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
         )
     except Exception:
         pass
